@@ -69,6 +69,11 @@
     <div class="chips" style="color:var(--dim);font-size:12px;align-items:center">Mode:
       <label><input type="radio" name="mode" value="game" checked> Game / part model</label>
       <label><input type="radio" name="mode" value="mesh"> AI 3D model (high quality)</label>
+      <label><input type="radio" name="mode" value="parts"> Part model (Roblox parts)</label>
+      <select id="style" title="3D style" style="background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;font-size:12px">
+        <option value="roblox">Style: Roblox</option><option value="lowpoly">Low poly</option><option value="cartoon">Cartoon</option><option value="realistic">Realistic</option></select>
+      <select id="quality" title="3D quality" style="background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;font-size:12px">
+        <option value="high">Quality: High</option><option value="fast">Fast</option></select>
       <label><input type="radio" name="mode" value="thumb"> Thumbnail / icon</label>
     </div>
     <form id="f">
@@ -221,6 +226,7 @@ $("#f").onsubmit = async (e) => {
   $("#q").value = ""; add("user", q);
   const mode = document.querySelector('input[name=mode]:checked').value;
   if (mode === "mesh") return makeMesh(q);
+  if (mode === "parts") return makePartModel(q);
   if (mode === "thumb") return makeThumbs(q);
   // send a compact summary of the current project so the AI can add onto it
   let ctx = q;
@@ -616,13 +622,29 @@ $("#imgIn").onchange = (e) => {
   const f = e.target.files[0]; if (!f) return; e.target.value = "";
   add("user", "📷 " + f.name + " → 3D model"); makeMesh(f.name, f);
 };
+// ---------- Part model mode: AI builds a detailed model from Roblox parts (no scripts) ----------
+async function makePartModel(q) {
+  const wait = add("ai", "Building a detailed part model…"); $("#go").disabled = true;
+  const style = $("#style").selectedOptions[0].textContent.replace("Style: ", "");
+  const ask = `[MODEL ONLY] Build a highly detailed ${style}-style 3D model from Roblox parts: ${q}.
+Return NO scripts, update "replace", and a model with 60-150 parts following the part-model quality rules. Before answering, mentally check proportions, symmetry, and that no parts float.`;
+  try {
+    const data = await generateGame([{ role: "user", content: ask }], (sec) => (wait.textContent = `Free limit hit — waiting ${sec}s, then continuing…`));
+    const res = data.result;
+    if (!res.model?.parts?.length) throw new Error("The AI returned no parts. Try again or add a key in ⚙ AI key.");
+    snapshot(); current = { model: res.model, scripts: [], remotes: [] }; render();
+    wait.textContent = `🧱 Built "${res.model.name || q}" from ${res.model.parts.length} parts. Export → Copy installer or .rbxmx for Studio. Ask in Game mode to add scripts or change it.`;
+  } catch (e) { wait.textContent = "Error: " + e.message; wait.classList.add("err"); }
+  finally { $("#go").disabled = false; }
+}
+
 // ---------- Free AI mesh ----------
 async function makeMesh(prompt, image) {
   const wait = add("ai", "Generating high-quality textured 3D model… (~1-2 min)"); $("#go").disabled = true;
   try {
     let buf, shapE = false;
     try {
-      const hq = await generateHQMesh({ prompt, image }, (s) => (wait.textContent = s));
+      const hq = await generateHQMesh({ prompt, image, style: $("#style").value, quality: $("#quality").value }, (s) => (wait.textContent = s));
       buf = hq.glb;
       const pic = document.createElement("img"); pic.src = hq.preview; pic.style.cssText = "width:120px;border-radius:8px;display:block;margin-top:6px";
       wait.after(pic);

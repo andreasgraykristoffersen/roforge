@@ -32,6 +32,16 @@ You turn the user's idea into a COMPLETE, PLAYABLE Roblox game that works the mo
 ## 3D models
 Built from parts (Block, Ball, Cylinder, Wedge). Units are studs, Y up, resting on y=0, rotation in degrees XYZ. Cylinder axis is X. Use 20-200 parts with good proportions, varied colors and materials. Game maps should be sized for Roblox characters (~5 studs tall, jumps ~7 studs high, ~12 studs gap max).
 
+## Part-model quality rules (when building a 3D model from parts)
+- Start from real-world proportions and a reference size (a character is ~5 studs, a door ~7x4, a car ~14x6x7).
+- Block out big shapes first, then add secondary forms, then small details (trims, bolts, windows, handles, eyes).
+- Keep it symmetrical where the real object is: mirror X positions exactly.
+- Parts must touch or overlap slightly — no floating gaps. Nothing below y=0.
+- Use Wedges for slopes/roofs/noses, Cylinders for wheels/pipes/trunks, Balls for heads/round tips, rotated Blocks for angled detail.
+- Use 3-6 harmonious colors plus 1 accent; Neon only for glowing bits; Glass with transparency 0.3-0.6 for windows.
+- Give parts descriptive names (Body, WheelFL, WindowL…).
+- Silhouette must be recognizable from any angle.
+
 ## Iteration / adding on
 The user can keep building on what you made ("make 10 more stages", "add a shop", "add a boss").
 - Set "update" to "add" when extending: return ONLY the NEW parts (continue existing numbering and positions, e.g. Stage11 starts where the last stage ended) and ONLY scripts that are new or changed (changed scripts in full, same name to replace). Existing parts/scripts you omit are kept.
@@ -137,7 +147,7 @@ async function callFree(messages, onWait) {
   };
   const sys = SYSTEM.replace("Always answer by calling the build_game tool.", "") +
     `\n\nRespond with ONLY the filled-in JSON data (NOT a JSON schema, no markdown fences), shaped exactly like this example:\n` + JSON.stringify(example) +
-    `\nIMPORTANT (free mode, short output limit): keep it compact — max 3 scripts, max 25 parts, total code under 5000 characters, plan and message 1-2 sentences.`;
+    `\nIMPORTANT (free mode, short output limit): keep it compact — max 3 scripts, max 25 parts, total code under 5000 characters, plan and message 1-2 sentences. EXCEPTION: if the request starts with [MODEL ONLY], return no scripts and 40-80 parts. To save space, OMIT any part field equal to its default (shape Block, rotation [0,0,0], material Plastic, transparency 0, canCollide true) and round numbers to 2 decimals.`;
   const send = () => fetch("https://text.pollinations.ai/openai", {
     method: "POST", headers: { "content-type": "application/json", ...(getPollenKey() ? { authorization: "Bearer " + getPollenKey() } : {}) },
     body: JSON.stringify({ model: "openai", max_tokens: 16000, reasoning_effort: "low", messages: [{ role: "system", content: sys }, ...messages], response_format: { type: "json_object" } }),
@@ -164,7 +174,7 @@ async function callFree(messages, onWait) {
     }
     return { result: r };
   }
-  catch { return { result: { message: text, scripts: [] } }; }
+  catch { return { result: salvage(text) }; }
 }
 
 async function callClaude(messages, onWait) {
@@ -205,12 +215,19 @@ async function gradioSimple(base, api, data) {
   return JSON.parse(m[1]);
 }
 
-async function textToImage(prompt) {
-  const out = await gradioSimple(FLUX, "infer", [prompt + ", single object, centered, full view, 3D render, soft studio lighting, plain white background", 0, true, 1024, 1024, 4]);
+const STYLES = {
+  roblox: "stylized Roblox UGC style, clean chunky shapes, smooth surfaces, bright saturated colors",
+  lowpoly: "low poly game asset, flat shaded facets, simple clean colors",
+  cartoon: "cartoon 3D style like a Pixar toy, rounded shapes, vibrant colors",
+  realistic: "photorealistic PBR game asset, detailed realistic materials and textures",
+};
+async function textToImage(prompt, style = "roblox") {
+  const p = `${prompt}, ${STYLES[style] || STYLES.roblox}, single isolated object, whole object fully visible, three-quarter front view, centered, no cropping, no text, soft even studio lighting, no shadows, plain pure white background, high detail 3D render`;
+  const out = await gradioSimple(FLUX, "infer", [p, 0, true, 1024, 1024, 4]);
   return await (await fetch(out[0].url)).blob();
 }
 
-async function imageToMesh(blob, onStatus = () => {}) {
+async function imageToMesh(blob, onStatus = () => {}, quality = "high") {
   const cfg = await (await fetch(TRELLIS + "/config")).json();
   const fn = (n) => cfg.dependencies.findIndex((d) => d.api_name === n);
   const session = Math.random().toString(36).slice(2);
@@ -241,16 +258,46 @@ async function imageToMesh(blob, onStatus = () => {}) {
   const up = await (await fetch(TRELLIS + "/gradio_api/upload", { method: "POST", body: fd, headers: authH() })).json();
   const file = { path: up[0], meta: { _type: "gradio.FileData" }, orig_name: "input.png" };
   await run("preprocess_image", [file]);
-  const out = await run("generate_and_extract_glb", [file, [], Math.floor(Math.random() * 1e6), 7.5, 12, 3, 12, "stochastic", 0.95, 1024]);
+  // high quality = more sampling steps, bigger texture, keep more triangles (Roblox allows 20k per mesh)
+  const q = quality === "high" ? [9, 30, 3.5, 30, 0.9, 2048] : [7.5, 12, 3, 12, 0.95, 1024];
+  const out = await run("generate_and_extract_glb", [file, [], Math.floor(Math.random() * 1e6), q[0], q[1], q[2], q[3], "stochastic", q[4], q[5]]);
   const glb = out.map((o) => o?.url || o?.value?.url).find((u) => u && /\.glb/i.test(u));
   if (!glb) throw new Error("TRELLIS returned no model");
   return await (await fetch(glb, { headers: authH() })).arrayBuffer();
 }
 
-async function generateHQMesh({ prompt, image }, onStatus = () => {}) {
+async function generateHQMesh({ prompt, image, style, quality }, onStatus = () => {}) {
   let blob = image;
-  if (!blob) { onStatus("Step 1/2: drawing a reference image (FLUX)…"); blob = await textToImage(prompt); }
+  if (!blob) { onStatus("Step 1/2: drawing a reference image (FLUX)…"); blob = await textToImage(prompt, style); }
   onStatus("Step 2/2: turning it into a textured 3D model (TRELLIS)…");
-  return { glb: await imageToMesh(blob, onStatus), preview: URL.createObjectURL(blob) };
+  return { glb: await imageToMesh(blob, onStatus, quality), preview: URL.createObjectURL(blob) };
 }
 export { generateHQMesh };
+
+// Recover complete parts/scripts from a reply that got cut off mid-JSON.
+function salvage(text) {
+  // if the JSON was nested inside a string, unescape it once
+  let t = text;
+  const nested = text.indexOf('{\\"');
+  if (nested >= 0 && nested < 40) t = text.replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  const grab = (key) => {
+    const i = t.indexOf('"' + key + '":['); if (i < 0) return [];
+    const out = []; let depth = 0, start = -1, inStr = false;
+    for (let j = t.indexOf("[", i) + 1; j < t.length; j++) {
+      const c = t[j];
+      if (inStr) { if (c === "\\") j++; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === "{") { if (depth++ === 0) start = j; }
+      else if (c === "}") { if (--depth === 0) { try { out.push(JSON.parse(t.slice(start, j + 1))); } catch {} } }
+      else if (c === "]" && depth === 0) break;
+    }
+    return out;
+  };
+  const parts = grab("parts"), scripts = grab("scripts").filter((x) => x.source);
+  const name = t.match(/"model":\{"name":"([^"]+)/)?.[1] || "Model";
+  const msg = t.match(/"message":"((?:[^"\\]|\\.)*)"/)?.[1];
+  return {
+    update: "replace", scripts, remotes: grab("remotes"), model: parts.length ? { name, parts } : null,
+    message: (msg || "Built it.") + (parts.length ? ` (reply was cut off; kept ${parts.length} complete parts)` : ""),
+  };
+}
