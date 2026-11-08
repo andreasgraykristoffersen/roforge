@@ -57,6 +57,7 @@
     <div id="log"><div class="msg ai">Describe a Roblox game or 3D model. I'll write the Luau scripts and build the model from parts — preview it here, then export to Roblox Studio.</div></div>
     <div class="chips">
       <span class="chip" data-instant style="border-color:var(--accent);color:var(--text)">⚡ Instant obby (no AI, no limits)</span>
+      <span class="chip" data-instant-coins style="border-color:var(--accent);color:var(--text)">⚡ Instant coin rush</span>
       <span class="chip">Obby with 10 stages, checkpoints, timer and saved best time</span>
       <span class="chip">Tycoon with droppers, conveyor, upgrades and saving</span>
       <span class="chip">Round-based sword fighting arena with lobby and intermission</span>
@@ -80,6 +81,7 @@
       <button class="tab on" data-p="view">3D Preview</button>
       <button class="tab" data-p="scripts">Scripts</button>
       <button class="tab" data-p="export">Export</button>
+      <span style="flex:1"></span><button id="playBtn">▶ Play</button>
     </div>
     <div class="pane on" id="view"><div id="empty">No model yet</div></div>
     <div class="pane" id="scripts"><p style="color:var(--dim)">No scripts yet.</p></div>
@@ -146,7 +148,9 @@ function resize() {
   renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
 }
 addEventListener("resize", resize); resize();
-(function loop() { controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); })();
+let lastT = performance.now();
+function loop(t = performance.now()) { const dt = (t - lastT) / 1000; lastT = t; if (play.on) playTick(dt); else controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); }
+requestAnimationFrame(loop); // first frame runs after the module (and play) is ready
 
 const MAT = { Neon: { emissive: true }, Glass: { opacity: 0.4 }, Metal: { metalness: 0.8, roughness: 0.3 }, SmoothPlastic: { roughness: 0.4 } };
 const deg = (a) => (a || 0) * Math.PI / 180;
@@ -422,6 +426,189 @@ function instantObby(count) {
   add("ai", `⚡ ${existing ? "Added " + count + " stages" : "Built an obby"}: now ${stages - 1} stages with jumps, lava, beams, moving platforms and stairs. Progress saves. Click the chip again to add 10 more, then Export → Copy installer.`);
 }
 document.querySelector("[data-instant]").addEventListener("click", (e) => { e.stopImmediatePropagation(); instantObby(10); }, true);
+
+// ---------- Play test (simulates the game in the browser: walk, jump, checkpoints, lava, movers, coins) ----------
+const play = { on: false, pos: new THREE.Vector3(), vel: new THREE.Vector3(), yaw: 0, pitch: 0.35, keys: {}, stage: 1, coins: 0, ground: null, hud: null, avatar: null, t: 0 };
+const PLAYER = { w: 2, h: 5, walk: 16, jump: 50, gravity: 196 };
+
+function spawnPoint() {
+  const cp = modelGroup.getObjectByName("Checkpoint" + play.stage) || modelGroup.getObjectByName("Checkpoint1") || modelGroup.getObjectByName("Spawn");
+  if (cp) { const b = new THREE.Box3().setFromObject(cp); return new THREE.Vector3((b.min.x + b.max.x) / 2, b.max.y + 0.1, (b.min.z + b.max.z) / 2); }
+  const b = new THREE.Box3().setFromObject(modelGroup); return new THREE.Vector3(0, b.max.y + 5, 0);
+}
+function respawn() { play.pos.copy(spawnPoint()); play.vel.set(0, 0, 0); }
+
+function startPlay() {
+  if (!modelGroup.children.length) return add("ai", "Build something first, then press ▶ Play.");
+  document.querySelectorAll(".tab,.pane").forEach((e) => e.classList.remove("on"));
+  $('[data-p="view"]').classList.add("on"); $("#view").classList.add("on"); resize();
+  play.on = true; play.stage = 1; play.coins = 0; play.t = 0; controls.enabled = false;
+  modelGroup.traverse((m) => { if (m.isMesh) { m.userData.home = m.position.clone(); m.visible = true; } });
+  if (!play.avatar) {
+    play.avatar = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 1), new THREE.MeshStandardMaterial({ color: 0x1e88e5 })); body.position.y = 3;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), new THREE.MeshStandardMaterial({ color: 0xffd54f })); head.position.y = 4.6;
+    const legs = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 1), new THREE.MeshStandardMaterial({ color: 0x2e7d32 })); legs.position.y = 1;
+    play.avatar.add(body, head, legs);
+  }
+  scene.add(play.avatar);
+  if (!play.hud) {
+    play.hud = document.createElement("div");
+    play.hud.style.cssText = "position:absolute;top:10px;left:50%;transform:translateX(-50%);background:#000a;color:#fff;padding:6px 14px;border-radius:10px;font-weight:700;pointer-events:none";
+    view.appendChild(play.hud);
+  }
+  play.hud.style.display = "block";
+  respawn();
+  $("#playBtn").textContent = "■ Stop";
+  add("ai", "▶ Play test: WASD / arrows to move, Space to jump, drag mouse to turn camera, R to respawn. Simulates checkpoints, lava (Kill*), moving platforms (Mover*) and coins (Coin*). The real Luau runs in Roblox Studio.");
+  renderer.domElement.focus?.();
+}
+function stopPlay() {
+  play.on = false; controls.enabled = true; scene.remove(play.avatar); if (play.hud) play.hud.style.display = "none";
+  modelGroup.traverse((m) => { if (m.isMesh && m.userData.home) { m.position.copy(m.userData.home); m.visible = true; } });
+  $("#playBtn").textContent = "▶ Play";
+}
+
+addEventListener("keydown", (e) => {
+  if (!play.on || e.target.tagName === "TEXTAREA") return;
+  play.keys[e.code] = true;
+  if (e.code === "KeyR") respawn();
+  if (e.code === "Escape") stopPlay();
+  if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+});
+addEventListener("keyup", (e) => (play.keys[e.code] = false));
+let drag = null;
+renderer.domElement.addEventListener("pointerdown", (e) => play.on && (drag = [e.clientX, e.clientY]));
+addEventListener("pointerup", () => (drag = null));
+addEventListener("pointermove", (e) => {
+  if (!play.on || !drag) return;
+  play.yaw -= (e.clientX - drag[0]) * 0.006; play.pitch = Math.min(1.3, Math.max(-0.2, play.pitch + (e.clientY - drag[1]) * 0.004)); drag = [e.clientX, e.clientY];
+});
+
+function playTick(dt) {
+  if (!play.on) return;
+  dt = Math.min(dt, 1 / 30); play.t += dt;
+  // animate movers like the server script does
+  const boxes = [];
+  modelGroup.traverse((m) => {
+    if (!m.isMesh || !m.visible) return;
+    const prev = new THREE.Box3().setFromObject(m);
+    if (/^Mover/.test(m.name) && m.userData.home) m.position.x = m.userData.home.x + Math.sin(play.t * 1.5) * 8;
+    if (/^Coin/.test(m.name)) m.rotation.y += dt * 3;
+    const box = new THREE.Box3().setFromObject(m);
+    boxes.push({ m, box, dx: box.min.x - prev.min.x });
+  });
+  // input relative to camera
+  const k = play.keys, f = (k.KeyW || k.ArrowUp ? 1 : 0) - (k.KeyS || k.ArrowDown ? 1 : 0), s = (k.KeyD || k.ArrowRight ? 1 : 0) - (k.KeyA || k.ArrowLeft ? 1 : 0);
+  const fwd = new THREE.Vector3(-Math.sin(play.yaw), 0, -Math.cos(play.yaw)), right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+  const move = fwd.multiplyScalar(f).add(right.multiplyScalar(s));
+  if (move.lengthSq()) { move.normalize(); play.avatar.rotation.y = Math.atan2(move.x, move.z); }
+  play.vel.x = move.x * PLAYER.walk; play.vel.z = move.z * PLAYER.walk;
+  if (play.ground && k.Space) play.vel.y = PLAYER.jump;
+  play.vel.y -= PLAYER.gravity * dt;
+  if (play.ground) play.pos.x += play.ground.dx; // ride moving platforms
+  // move + collide one axis at a time
+  const half = PLAYER.w / 2, pbox = () => new THREE.Box3(new THREE.Vector3(play.pos.x - half, play.pos.y, play.pos.z - half), new THREE.Vector3(play.pos.x + half, play.pos.y + PLAYER.h, play.pos.z + half));
+  play.ground = null;
+  for (const axis of ["x", "y", "z"]) {
+    play.pos[axis] += play.vel[axis] * dt;
+    for (const b of boxes) {
+      if (/^Coin/.test(b.m.name) || b.m.material.opacity < 0.5) continue;
+      const p = pbox(); if (!p.intersectsBox(b.box)) continue;
+      if (axis === "y") {
+        if (play.vel.y <= 0) { play.pos.y = b.box.max.y; play.ground = b; } else play.pos.y = b.box.min.y - PLAYER.h;
+        play.vel.y = 0;
+      } else if (b.box.max.y - play.pos.y < 1.1) { play.pos.y = b.box.max.y; } // step up small ledges
+      else play.pos[axis] = play.vel[axis] > 0 ? b.box.min[axis] - half - 0.001 : b.box.max[axis] + half + 0.001;
+    }
+  }
+  // touches: checkpoints, kill bricks, coins
+  const feet = pbox().expandByScalar(0.15);
+  for (const b of boxes) {
+    if (!feet.intersectsBox(b.box)) continue;
+    const n = +(b.m.name.match(/^Checkpoint(\d+)$/)?.[1] || 0);
+    if (n === play.stage + 1) { play.stage = n; b.m.material = b.m.material.clone(); b.m.material.color.set(0x50ff78); }
+    if (/^Kill/.test(b.m.name)) { respawn(); return; }
+    if (/^Coin/.test(b.m.name)) { b.m.visible = false; play.coins++; }
+  }
+  if (play.pos.y < new THREE.Box3().setFromObject(modelGroup).min.y - 40) respawn();
+  // avatar + camera
+  play.avatar.position.copy(play.pos);
+  const dist = 22, cam = new THREE.Vector3(Math.sin(play.yaw) * Math.cos(play.pitch), Math.sin(play.pitch), Math.cos(play.yaw) * Math.cos(play.pitch)).multiplyScalar(dist);
+  camera.position.copy(play.pos).add(cam).add(new THREE.Vector3(0, 4, 0));
+  camera.lookAt(play.pos.x, play.pos.y + 4, play.pos.z);
+  let total = 0; modelGroup.traverse((m) => m.isMesh && /^Coin/.test(m.name) && total++);
+  const lastCp = boxes.reduce((a, b) => Math.max(a, +(b.m.name.match(/^Checkpoint(\d+)$/)?.[1] || 0)), 0);
+  play.hud.textContent = (lastCp ? `Stage ${play.stage}/${lastCp}` : "") + (total ? `  🪙 ${play.coins}/${total}` : "") + (lastCp && play.stage === lastCp ? "  🏆 You win!" : "");
+}
+$("#playBtn").onclick = () => (play.on ? stopPlay() : startPlay());
+
+// ---------- Instant coin rush (no AI) ----------
+const COIN_SERVER = `-- RoForge Coin Rush: touch coins to collect, they respawn. Coins save.
+local Players = game:GetService("Players")
+local store = game:GetService("DataStoreService"):GetDataStore("RoForgeCoins_v1")
+local map = workspace:WaitForChild("CoinRush")
+
+local function onPlayer(player: Player)
+	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
+	local coins = Instance.new("IntValue"); coins.Name = "Coins"; coins.Parent = ls
+	local ok, saved = pcall(function() return store:GetAsync(tostring(player.UserId)) end)
+	if ok and typeof(saved) == "number" then coins.Value = saved end
+end
+local function save(player: Player)
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then pcall(function() store:SetAsync(tostring(player.UserId), ls.Coins.Value) end) end
+end
+
+for _, part in map:GetChildren() do
+	if part:IsA("BasePart") and string.match(part.Name, "^Coin") then
+		local taken = false
+		part.Touched:Connect(function(hit)
+			if taken then return end
+			local player = Players:GetPlayerFromCharacter(hit.Parent)
+			if not player or not player:FindFirstChild("leaderstats") then return end
+			taken = true
+			player.leaderstats.Coins.Value += 1
+			part.Transparency = 1
+			task.delay(10, function() part.Transparency = 0; taken = false end)
+		end)
+		task.spawn(function()
+			while part.Parent do
+				part.CFrame *= CFrame.Angles(0, math.rad(3), 0)
+				task.wait()
+			end
+		end)
+	end
+	if part:IsA("BasePart") and string.match(part.Name, "^Kill") then
+		part.Touched:Connect(function(hit)
+			local hum = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
+			if hum then hum.Health = 0 end
+		end)
+	end
+end
+
+Players.PlayerAdded:Connect(onPlayer)
+for _, p in Players:GetPlayers() do task.spawn(onPlayer, p) end
+Players.PlayerRemoving:Connect(save)
+game:BindToClose(function() for _, p in Players:GetPlayers() do save(p) end end)
+`;
+function instantCoinRush() {
+  snapshot();
+  const parts = [{ name: "Ground", size: [160, 2, 160], position: [0, -1, 0], color: "#6ab04c", material: "Grass" },
+    { name: "Spawn", size: [10, 1, 10], position: [0, 0.5, 0], color: "#dfe6e9", material: "SmoothPlastic" }];
+  let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < 12; i++) { // platforms with coins on top
+    const x = (rnd() - 0.5) * 130, z = (rnd() - 0.5) * 130, h = 2 + Math.floor(rnd() * 4) * 3;
+    parts.push({ name: `Tower${i}`, size: [10, h, 10], position: [x, h / 2, z], color: PALETTE[i % PALETTE.length], material: "Brick" });
+    parts.push({ name: `CoinT${i}`, shape: "Cylinder", size: [0.4, 2.5, 2.5], position: [x, h + 2, z], rotation: [0, 90, 0], color: "#f9ca24", material: "Neon" });
+  }
+  for (let i = 0; i < 30; i++) parts.push({ name: `Coin${i}`, shape: "Cylinder", size: [0.4, 2.5, 2.5], position: [(rnd() - 0.5) * 140, 2, (rnd() - 0.5) * 140], rotation: [0, 90, 0], color: "#f9ca24", material: "Neon" });
+  for (let i = 0; i < 4; i++) parts.push({ name: `KillLava${i}`, size: [18, 0.4, 18], position: [(rnd() - 0.5) * 110, 0.2, (rnd() - 0.5) * 110], color: "#ff4500", material: "Neon" });
+  current = { model: { name: "CoinRush", parts }, remotes: [], scripts: [{ name: "CoinServer", type: "Script", parent: "ServerScriptService", source: COIN_SERVER }] };
+  render();
+  add("ai", "⚡ Built Coin Rush: 42 coins on the ground and on towers, lava patches, coins respawn after 10s and save. Press ▶ Play to try it.");
+}
+document.querySelector("[data-instant-coins]").addEventListener("click", (e) => { e.stopImmediatePropagation(); instantCoinRush(); }, true);
 
 // ---------- Free AI mesh ----------
 async function makeMesh(prompt) {
