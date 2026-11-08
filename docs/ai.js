@@ -114,12 +114,12 @@ async function generateMesh(prompt, onWait = () => {}) {
 }
 async function generateMeshOnce(prompt) {
   const start = await fetch(`${SHAPE_SPACE}/call/text-to-3d`, {
-    method: "POST", headers: { "content-type": "application/json" },
+    method: "POST", headers: { "content-type": "application/json", ...authH() },
     body: JSON.stringify({ data: [prompt, Math.floor(Math.random() * 1e6), 15, 64] }),
   });
   if (!start.ok) throw new Error(`3D generator busy (${start.status}). Try again in a minute.`);
   const { event_id } = await start.json();
-  const stream = await (await fetch(`${SHAPE_SPACE}/call/text-to-3d/${event_id}`)).text();
+  const stream = await (await fetch(`${SHAPE_SPACE}/call/text-to-3d/${event_id}`, { headers: authH() })).text();
   const m = stream.match(/event: complete\s*data: (.*)/);
   if (!m) throw new Error("3D generator failed: " + (stream.match(/data: (.*)/)?.[1] || "no result"));
   const file = JSON.parse(m[1])[0];
@@ -187,3 +187,70 @@ async function callClaude(messages, onWait) {
 
 
 export { callClaude as generateGame, generateMesh };
+
+// ---------- HIGH QUALITY 3D: text -> image (FLUX) -> textured 3D mesh (TRELLIS), free on Hugging Face ----------
+// Uses free ZeroGPU quota. A free Hugging Face token (hf_...) gives much more quota.
+const hfToken = () => ls("roforge_hf").trim();
+const authH = () => (hfToken() ? { authorization: "Bearer " + hfToken() } : {});
+const FLUX = "https://black-forest-labs-flux-1-schnell.hf.space";
+const TRELLIS = "https://trellis-community-trellis.hf.space";
+
+async function gradioSimple(base, api, data) {
+  const s = await fetch(`${base}/gradio_api/call/${api}`, { method: "POST", headers: { "content-type": "application/json", ...authH() }, body: JSON.stringify({ data }) });
+  if (!s.ok) throw new Error(`${api} busy (${s.status})`);
+  const { event_id } = await s.json();
+  const t = await (await fetch(`${base}/gradio_api/call/${api}/${event_id}`, { headers: authH() })).text();
+  const m = t.match(/event: complete\s*data: (.*)/);
+  if (!m) throw new Error(`${api} failed (GPU quota or busy): ` + (t.match(/data: (.*)/)?.[1] || ""));
+  return JSON.parse(m[1]);
+}
+
+async function textToImage(prompt) {
+  const out = await gradioSimple(FLUX, "infer", [prompt + ", single object, centered, full view, 3D render, soft studio lighting, plain white background", 0, true, 1024, 1024, 4]);
+  return await (await fetch(out[0].url)).blob();
+}
+
+async function imageToMesh(blob, onStatus = () => {}) {
+  const cfg = await (await fetch(TRELLIS + "/config")).json();
+  const fn = (n) => cfg.dependencies.findIndex((d) => d.api_name === n);
+  const session = Math.random().toString(36).slice(2);
+  const run = async (name, data) => {
+    const j = await fetch(TRELLIS + "/gradio_api/queue/join", { method: "POST", headers: { "content-type": "application/json", ...authH() },
+      body: JSON.stringify({ data, fn_index: fn(name), session_hash: session, event_data: null, trigger_id: null }) });
+    if (!j.ok) throw new Error(`TRELLIS busy (${j.status})`);
+    const res = await fetch(TRELLIS + "/gradio_api/queue/data?session_hash=" + session, { headers: authH() });
+    const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i; while ((i = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, i).replace(/^data: ?/, ""); buf = buf.slice(i + 2);
+        let msg; try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.msg === "estimation") onStatus(`In queue (position ${msg.rank + 1}, ~${Math.round(msg.rank_eta || 0)}s)…`);
+        if (msg.msg === "process_starts") onStatus("Building textured 3D model…");
+        if (msg.msg === "process_completed") {
+          if (!msg.success) throw new Error("TRELLIS failed — usually the free GPU quota is used up. Add a free Hugging Face token (⚙ AI key) or try later.");
+          return msg.output.data;
+        }
+      }
+    }
+    throw new Error("TRELLIS connection closed");
+  };
+  await run("start_session", []);
+  const fd = new FormData(); fd.append("files", blob, "input.png");
+  const up = await (await fetch(TRELLIS + "/gradio_api/upload", { method: "POST", body: fd, headers: authH() })).json();
+  const file = { path: up[0], meta: { _type: "gradio.FileData" }, orig_name: "input.png" };
+  await run("preprocess_image", [file]);
+  const out = await run("generate_and_extract_glb", [file, [], Math.floor(Math.random() * 1e6), 7.5, 12, 3, 12, "stochastic", 0.95, 1024]);
+  const glb = out.map((o) => o?.url || o?.value?.url).find((u) => u && /\.glb/i.test(u));
+  if (!glb) throw new Error("TRELLIS returned no model");
+  return await (await fetch(glb, { headers: authH() })).arrayBuffer();
+}
+
+async function generateHQMesh({ prompt, image }, onStatus = () => {}) {
+  let blob = image;
+  if (!blob) { onStatus("Step 1/2: drawing a reference image (FLUX)…"); blob = await textToImage(prompt); }
+  onStatus("Step 2/2: turning it into a textured 3D model (TRELLIS)…");
+  return { glb: await imageToMesh(blob, onStatus), preview: URL.createObjectURL(blob) };
+}
+export { generateHQMesh };

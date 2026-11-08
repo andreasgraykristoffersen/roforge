@@ -68,11 +68,12 @@
     </div>
     <div class="chips" style="color:var(--dim);font-size:12px;align-items:center">Mode:
       <label><input type="radio" name="mode" value="game" checked> Game / part model</label>
-      <label><input type="radio" name="mode" value="mesh"> Free AI 3D mesh</label>
+      <label><input type="radio" name="mode" value="mesh"> AI 3D model (high quality)</label>
       <label><input type="radio" name="mode" value="thumb"> Thumbnail / icon</label>
     </div>
     <form id="f">
       <textarea id="q" placeholder="e.g. Make a sword fighting arena with a lava floor..."></textarea>
+      <label class="ghost" title="Image → 3D model" style="cursor:pointer;align-self:stretch;display:grid;place-items:center;padding:0 10px;border:1px solid var(--line);border-radius:8px">📷<input id="imgIn" type="file" accept="image/*" hidden></label>
       <button id="go">Forge</button>
     </form>
   </section>
@@ -104,7 +105,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { generateGame, generateMesh } from "./ai.js";
+import { generateGame, generateMesh, generateHQMesh } from "./ai.js";
 
 const $ = (s) => document.querySelector(s);
 const history = [];
@@ -113,8 +114,9 @@ let current = { scripts: [], model: null, remotes: [] };
 // ---------- Settings (optional Claude key, stored only in this browser) ----------
 $("#settings").onclick = () => {
   let cur = ""; try { cur = localStorage.getItem("roforge_key") || ""; } catch {}
-  const k = prompt("Paste a key (stored only in this browser):\n• Free Pollinations key from enter.pollinations.ai → free game AI\n• Anthropic key (sk-ant-...) → best games", cur);
+  const k = prompt("Paste a key (stored only in this browser):\n• Free Pollinations key from enter.pollinations.ai → free game AI\n• Anthropic key (sk-ant-...) → best games\n• Free Hugging Face token (hf_...) from huggingface.co/settings/tokens → more high-quality 3D models", cur);
   if (k === null) return;
+  if (k.trim().startsWith("hf_")) { try { localStorage.setItem("roforge_hf", k.trim()); } catch {} return add("ai", "Hugging Face token saved: more free GPU for high-quality 3D models."); }
   try { localStorage.setItem("roforge_key", k.trim()); } catch {}
   $("#aimode").textContent = !k.trim() ? "No key" : k.trim().startsWith("sk-ant-") ? "Claude mode" : "Free mode";
 };
@@ -610,15 +612,30 @@ function instantCoinRush() {
 }
 document.querySelector("[data-instant-coins]").addEventListener("click", (e) => { e.stopImmediatePropagation(); instantCoinRush(); }, true);
 
+$("#imgIn").onchange = (e) => {
+  const f = e.target.files[0]; if (!f) return; e.target.value = "";
+  add("user", "📷 " + f.name + " → 3D model"); makeMesh(f.name, f);
+};
 // ---------- Free AI mesh ----------
-async function makeMesh(prompt) {
-  const wait = add("ai", "Generating 3D mesh with free AI (Shap-E)… ~30-90s"); $("#go").disabled = true;
+async function makeMesh(prompt, image) {
+  const wait = add("ai", "Generating high-quality textured 3D model… (~1-2 min)"); $("#go").disabled = true;
   try {
-    const buf = await generateMesh(prompt, (sec) => (wait.textContent = `Free GPU quota used up — waiting ${sec}s, then continuing automatically…`));
+    let buf, shapE = false;
+    try {
+      const hq = await generateHQMesh({ prompt, image }, (s) => (wait.textContent = s));
+      buf = hq.glb;
+      const pic = document.createElement("img"); pic.src = hq.preview; pic.style.cssText = "width:120px;border-radius:8px;display:block;margin-top:6px";
+      wait.after(pic);
+    } catch (e) {
+      if (image) throw e;
+      wait.textContent = `High-quality generator unavailable (${e.message}). Falling back to basic Shap-E…`;
+      shapE = true;
+      buf = await generateMesh(prompt, (sec) => (wait.textContent = `Free GPU quota used up — waiting ${sec}s, then continuing automatically…`));
+    }
     const gltf = await new GLTFLoader().parseAsync(buf, "");
     const obj = gltf.scene;
     // Shap-E is ~1 unit, Y-up rotated: scale to ~8 studs and stand it upright
-    obj.rotation.x = -Math.PI / 2;
+    if (shapE) obj.rotation.x = -Math.PI / 2;
     const b = new THREE.Box3().setFromObject(obj), s = 8 / (b.getSize(new THREE.Vector3()).length() || 1);
     obj.scale.setScalar(s);
     const b2 = new THREE.Box3().setFromObject(obj); obj.position.y -= b2.min.y;
