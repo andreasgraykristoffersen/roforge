@@ -1,11 +1,11 @@
-// Optional local preview server. The app is fully static (public/) and runs in the browser,
-// so you can also host public/ on GitHub Pages, Netlify, Vercel, etc.
+// Optional local preview server. The app is fully static (docs/) and runs in the browser,
+// so you can also host docs/ on GitHub Pages, Netlify, Vercel, etc.
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
 const PORT = process.env.PORT || 3000;
-const ROOT = path.join(__dirname, "public");
+const ROOT = path.join(__dirname, "docs");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 
 http.createServer((req, res) => {

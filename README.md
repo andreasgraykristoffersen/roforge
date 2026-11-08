@@ -11,7 +11,7 @@ AI that builds Roblox games (Luau scripts + maps made of parts), 3D meshes, and 
 - **3D preview** in the browser, plus a **Studio installer** (paste into the Command Bar), **.rbxmx** and **.glb** export.
 
 ## Runs fully online
-Everything runs in the browser, with no backend. Host the `public/` folder on any static host (GitHub Pages, Netlify, Vercel, Cloudflare Pages).
+Everything runs in the browser, with no backend. Host the `docs/` folder on any static host (GitHub Pages, Netlify, Vercel, Cloudflare Pages).
 
 To try it locally: `node server.js`, then open http://localhost:3000.
 
