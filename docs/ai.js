@@ -196,7 +196,7 @@ async function callClaude(messages, onWait) {
 }
 
 
-export { callClaude as generateGame, generateMesh };
+export { generateMesh };
 
 // ---------- HIGH QUALITY 3D: text -> image (FLUX) -> textured 3D mesh (TRELLIS), free on Hugging Face ----------
 // Uses free ZeroGPU quota. A free Hugging Face token (hf_...) gives much more quota.
@@ -301,3 +301,75 @@ function salvage(text) {
     message: (msg || "Built it.") + (parts.length ? ` (reply was cut off; kept ${parts.length} complete parts)` : ""),
   };
 }
+
+// ---------- Stronger free models via a (free) Pollinations key ----------
+const POLLEN_URL = "https://gen.pollinations.ai/v1/chat/completions";
+const pollenModel = () => ls("roforge_pmodel") || "deepseek";
+
+async function pollenChat(body) {
+  const res = await fetch(POLLEN_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + getPollenKey() },
+    body: JSON.stringify({ model: pollenModel(), ...body }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Pollinations (${pollenModel()}) error ${res.status}: ${data.error?.message || ""}`);
+  return data.choices?.[0]?.message || {};
+}
+
+async function callPollen(messages) {
+  const msg = await pollenChat({
+    max_tokens: 32000,
+    messages: [{ role: "system", content: SYSTEM }, ...messages],
+    tools: [{ type: "function", function: { name: TOOL.name, description: TOOL.description, parameters: TOOL.input_schema } }],
+    tool_choice: { type: "function", function: { name: TOOL.name } },
+  });
+  const args = msg.tool_calls?.[0]?.function?.arguments;
+  const text = args || msg.content || "";
+  try { return { result: JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) }; }
+  catch { return { result: salvage(text) }; }
+}
+
+// ---------- "Understand first": turn a short request into a detailed design brief ----------
+const BRIEF_SYSTEM = `You are a senior Roblox game designer and 3D artist. The user wrote a short, possibly vague or misspelled request.
+Work out what they REALLY want and write a precise design brief (max 250 words) that a builder can follow exactly:
+- Restate the request clearly (fix spelling, infer intent, pick sensible defaults for anything missing).
+- For a 3D model: list every component with approximate size in studs, position relative to the others, shape (Block/Wedge/Cylinder/Ball), color and material. Mention what makes it instantly recognizable.
+- For a game: core loop, win/lose, progression, list of mechanics, map layout with sizes, UI, and which scripts/remotes are needed.
+- If they want to change existing work, say exactly what to add/change and what to keep.
+Plain text only, no code.`;
+
+async function writeBrief(messages) {
+  const last = messages[messages.length - 1];
+  const convo = [{ role: "user", content: (typeof last.content === "string" ? last.content : "").slice(0, 6000) }];
+  if (getKey()) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": getKey(), "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+      body: JSON.stringify({ model: getModel(), max_tokens: 1200, system: BRIEF_SYSTEM, messages: convo }),
+    });
+    const d = await res.json(); if (!res.ok) throw new Error(d.error?.message);
+    return d.content.filter((c) => c.type === "text").map((c) => c.text).join("");
+  }
+  if (getPollenKey()) return (await pollenChat({ max_tokens: 1500, messages: [{ role: "system", content: BRIEF_SYSTEM }, ...convo] })).content || "";
+  return "";
+}
+
+async function smartGenerate(messages, onWait, onStatus = () => {}) {
+  let msgs = messages;
+  if (getKey() || getPollenKey()) { // anonymous free tier is 1 reply / 45s, so skip the extra step there
+    try {
+      onStatus("🧠 Understanding your request…");
+      const brief = await writeBrief(messages);
+      if (brief) {
+        onStatus("🔨 Building from the design brief…\n\n" + brief.slice(0, 600));
+        const last = msgs[msgs.length - 1];
+        msgs = [...msgs.slice(0, -1), { ...last, content: last.content + "\n\n--- DESIGN BRIEF (follow it closely) ---\n" + brief }];
+      }
+    } catch { /* brief is optional */ }
+  }
+  if (getKey()) return callClaude(msgs, onWait);
+  if (getPollenKey()) return callPollen(msgs);
+  return callFree(msgs, onWait);
+}
+export { smartGenerate };

@@ -48,7 +48,9 @@
 </head>
 <body>
 <header><b>Ro<span>Forge</span></b><span style="color:var(--dim)">AI Roblox game &amp; 3D model builder</span>
-  <span style="flex:1"></span><span id="aimode" style="color:var(--dim);font-size:12px">Free mode</span>
+  <span style="flex:1"></span>
+  <select id="pmodel" title="AI model used with a Pollinations key" style="background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;font-size:12px"><option value="deepseek">DeepSeek V4</option><option value="glm-5.3">GLM-5.3</option><option value="kimi-k3">Kimi K3</option><option value="qwen3.8-2.4t-a95b">Qwen 3.8</option><option value="gpt-5.4-mini">GPT-5.4 mini</option></select>
+  <span id="aimode" style="color:var(--dim);font-size:12px">Free mode</span>
   <button id="undo" class="ghost" title="Undo last change">↶ Undo</button>
   <button id="newp" class="ghost">New</button>
   <button id="settings" class="ghost">⚙ AI key</button></header>
@@ -110,7 +112,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { generateGame, generateMesh, generateHQMesh } from "./ai.js";
+import { smartGenerate as generateGame, generateMesh, generateHQMesh } from "./ai.js";
 
 const $ = (s) => document.querySelector(s);
 const history = [];
@@ -127,6 +129,8 @@ $("#settings").onclick = () => {
 };
 try { const k = localStorage.getItem("roforge_key") || ""; $("#aimode").textContent = !k ? "No key" : k.startsWith("sk-ant-") ? "Claude mode" : "Free mode"; } catch {}
 
+try { $("#pmodel").value = localStorage.getItem("roforge_pmodel") || "deepseek"; } catch {}
+$("#pmodel").onchange = (e) => { try { localStorage.setItem("roforge_pmodel", e.target.value); } catch {} };
 // ---------- Tabs ----------
 document.querySelectorAll(".tab").forEach((t) => t.onclick = () => {
   document.querySelectorAll(".tab,.pane").forEach((e) => e.classList.remove("on"));
@@ -242,7 +246,7 @@ $("#f").onsubmit = async (e) => {
   while (history.length > 8) history.splice(0, 2); // keep requests small; project summary carries the state
   const wait = add("ai", "Forging…"); $("#go").disabled = true;
   try {
-    const data = await generateGame(history, (sec) => (wait.textContent = `Free limit hit — waiting ${sec}s, then continuing automatically…`));
+    const data = await generateGame(history, (sec) => (wait.textContent = `Free limit hit — waiting ${sec}s, then continuing automatically…`), (s) => (wait.textContent = s));
     const res = data.result;
     snapshot();
     // store a short assistant turn (full code is kept in `current`, not resent)
@@ -629,7 +633,7 @@ async function makePartModel(q) {
   const ask = `[MODEL ONLY] Build a highly detailed ${style}-style 3D model from Roblox parts: ${q}.
 Return NO scripts, update "replace", and a model with 60-150 parts following the part-model quality rules. Before answering, mentally check proportions, symmetry, and that no parts float.`;
   try {
-    const data = await generateGame([{ role: "user", content: ask }], (sec) => (wait.textContent = `Free limit hit — waiting ${sec}s, then continuing…`));
+    const data = await generateGame([{ role: "user", content: ask }], (sec) => (wait.textContent = `Free limit hit — waiting ${sec}s, then continuing…`), (s) => (wait.textContent = s));
     const res = data.result;
     if (!res.model?.parts?.length) throw new Error("The AI returned no parts. Try again or add a key in ⚙ AI key.");
     snapshot(); current = { model: res.model, scripts: [], remotes: [] }; render();
