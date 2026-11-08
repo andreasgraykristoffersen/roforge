@@ -99,7 +99,20 @@ const TOOL = {
 
 // ---------- FREE: text-to-3D mesh via Shap-E on Hugging Face (no key needed) ----------
 const SHAPE_SPACE = "https://hysts-shap-e.hf.space/gradio_api";
-async function generateMesh(prompt) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// keeps going: waits out free-tier limits and retries instead of failing
+async function generateMesh(prompt, onWait = () => {}) {
+  for (let n = 0; ; n++) {
+    try { return await generateMeshOnce(prompt); }
+    catch (e) {
+      if (n >= 5 || !/quota|busy|429|queue/i.test(e.message)) throw e;
+      const m = e.message.match(/Try again in (\d+):(\d+):(\d+)/);
+      const ms = m ? ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + 5000 : 60000;
+      onWait(Math.round(ms / 1000)); await sleep(ms);
+    }
+  }
+}
+async function generateMeshOnce(prompt) {
   const start = await fetch(`${SHAPE_SPACE}/call/text-to-3d`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ data: [prompt, Math.floor(Math.random() * 1e6), 15, 64] }),
@@ -115,7 +128,7 @@ async function generateMesh(prompt) {
 }
 
 // ---------- FREE: text AI via Pollinations (used when no ANTHROPIC_API_KEY) ----------
-async function callFree(messages) {
+async function callFree(messages, onWait) {
   const example = {
     update: "replace", plan: "...", message: "...", remotes: [{ name: "CoinCollected", type: "RemoteEvent" }],
     scripts: [{ name: "GameServer", type: "Script", parent: "ServerScriptService", source: "-- full Luau code" }],
@@ -130,9 +143,8 @@ async function callFree(messages) {
     body: JSON.stringify({ model: "openai", max_tokens: 16000, reasoning_effort: "low", messages: [{ role: "system", content: sys }, ...messages], response_format: { type: "json_object" } }),
   });
   let res = await send();
-  if (res.status === 402 || res.status === 429) { // free tier: 1 reply / 45s — wait and retry once
-    await new Promise((r) => setTimeout(r, 46000));
-    res = await send();
+  for (let i = 0; i < 6 && (res.status === 402 || res.status === 429); i++) { // free tier limit: wait and keep going
+    onWait?.(46); await sleep(46000); res = await send();
   }
   if (res.status === 403) throw new Error("The free text AI needs a free key when used from a website. Get one at https://enter.pollinations.ai (free sign-up), then click ⚙ AI key and paste it. Or paste an Anthropic key (sk-ant-...) for the best games.");
   if (!res.ok) throw new Error(`Free AI error ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -155,8 +167,8 @@ async function callFree(messages) {
   catch { return { result: { message: text, scripts: [] } }; }
 }
 
-async function callClaude(messages) {
-  const API_KEY = getKey(); if (!API_KEY) return callFree(messages);
+async function callClaude(messages, onWait) {
+  const API_KEY = getKey(); if (!API_KEY) return callFree(messages, onWait);
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": API_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },

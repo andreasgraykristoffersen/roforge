@@ -227,7 +227,7 @@ $("#f").onsubmit = async (e) => {
   while (history.length > 8) history.splice(0, 2); // keep requests small; project summary carries the state
   const wait = add("ai", "Forging…"); $("#go").disabled = true;
   try {
-    const data = await generateGame(history);
+    const data = await generateGame(history, (sec) => (wait.textContent = `Free limit hit — waiting ${sec}s, then continuing automatically…`));
     const res = data.result;
     // store a short assistant turn (full code is kept in `current`, not resent)
     history.push({ role: "assistant", content: `[${res.update || "replace"}] ${res.message || ""} Scripts: ${(res.scripts || []).map((s) => s.name).join(", ")}. New parts: ${res.model?.parts?.length || 0}.` });
@@ -260,7 +260,7 @@ $("#f").onsubmit = async (e) => {
 async function makeMesh(prompt) {
   const wait = add("ai", "Generating 3D mesh with free AI (Shap-E)… ~30-90s"); $("#go").disabled = true;
   try {
-    const buf = await generateMesh(prompt);
+    const buf = await generateMesh(prompt, (sec) => (wait.textContent = `Free GPU quota used up — waiting ${sec}s, then continuing automatically…`));
     const gltf = await new GLTFLoader().parseAsync(buf, "");
     const obj = gltf.scene;
     // Shap-E is ~1 unit, Y-up rotated: scale to ~8 studs and stand it upright
@@ -294,6 +294,9 @@ function makeThumbs(prompt) {
     const delay = grid.children.length * 47000;
     if (delay) card.querySelector("div").textContent += " (starts in ~45s, free limit)";
     setTimeout(() => (img.src = url), delay);
+    let tries = 0; // free limit image or error: retry until it loads
+    img.onerror = () => tries < 6 && retry();
+    const retry = () => { tries++; card.querySelector("div").textContent = label + " (free limit, retrying in 47s…)"; setTimeout(() => (img.src = url + "&r=" + tries), 47000); };
     const btn = document.createElement("button"); btn.className = "ghost"; btn.textContent = "Download"; btn.style.marginTop = "4px";
     btn.textContent = "Open full size (right-click → Save)";
     btn.onclick = () => open(url, "_blank");
