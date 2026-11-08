@@ -10,23 +10,17 @@ AI that builds Roblox games (Luau scripts + maps made of parts), 3D meshes, and 
 - **Free thumbnails + icons** – 1920×1080 thumbnail and 512×512 icon via [Pollinations](https://pollinations.ai).
 - **3D preview** in the browser, plus a **Studio installer** (paste into the Command Bar), **.rbxmx** and **.glb** export.
 
-## Run
+## Runs fully online
+Everything runs in the browser, with no backend. Host the `public/` folder on any static host (GitHub Pages, Netlify, Vercel, Cloudflare Pages).
 
-Needs [Node.js](https://nodejs.org) 18+.
+To try it locally: `node server.js`, then open http://localhost:3000.
 
-```bash
-node server.js
-```
-
-Open http://localhost:3000.
-
-### AI backends
-| Mode | Setup | Notes |
-|---|---|---|
-| Free (default) | nothing | Pollinations text AI. Smaller games; limited to 1 reply every 45s. |
-| Claude (best) | `$env:ANTHROPIC_API_KEY = "sk-ant-..."` | Much bigger, better games. Optional `$env:MODEL = "claude-opus-5-5"`. |
-
-The 3D meshes and thumbnails are always free.
+### AI keys (click ⚙ AI key in the app; stored only in your browser)
+| Feature | Needs |
+|---|---|
+| 3D meshes (Shap-E) | nothing. Free Hugging Face GPU quota, resets over time. |
+| Thumbnails / icons | nothing. Free tier allows 1 image per 45s. |
+| Game builder | a **free** Pollinations key from https://enter.pollinations.ai, **or** an Anthropic key (`sk-ant-…`) for the best games. |
 
 ## Using it in Roblox Studio
 1. **Export → Copy installer**, then in Studio open View → Command Bar, paste, and press Enter.

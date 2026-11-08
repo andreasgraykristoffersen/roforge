@@ -47,7 +47,9 @@
 </style>
 </head>
 <body>
-<header><b>Ro<span>Forge</span></b><span style="color:var(--dim)">AI Roblox game &amp; 3D model builder</span></header>
+<header><b>Ro<span>Forge</span></b><span style="color:var(--dim)">AI Roblox game &amp; 3D model builder</span>
+  <span style="flex:1"></span><span id="aimode" style="color:var(--dim);font-size:12px">Free mode</span>
+  <button id="settings" class="ghost">⚙ AI key</button></header>
 <main>
   <section id="chat">
     <div id="log"><div class="msg ai">Describe a Roblox game or 3D model. I'll write the Luau scripts and build the model from parts — preview it here, then export to Roblox Studio.</div></div>
@@ -97,10 +99,21 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFExporter } from "three/addons/exporters/GLTFExporter.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { generateGame, generateMesh } from "./ai.js";
 
 const $ = (s) => document.querySelector(s);
 const history = [];
 let current = { scripts: [], model: null, remotes: [] };
+
+// ---------- Settings (optional Claude key, stored only in this browser) ----------
+$("#settings").onclick = () => {
+  let cur = ""; try { cur = localStorage.getItem("roforge_key") || ""; } catch {}
+  const k = prompt("Paste a key (stored only in this browser):\n• Free Pollinations key from enter.pollinations.ai → free game AI\n• Anthropic key (sk-ant-...) → best games", cur);
+  if (k === null) return;
+  try { localStorage.setItem("roforge_key", k.trim()); } catch {}
+  $("#aimode").textContent = !k.trim() ? "No key" : k.trim().startsWith("sk-ant-") ? "Claude mode" : "Free mode";
+};
+try { const k = localStorage.getItem("roforge_key") || ""; $("#aimode").textContent = !k ? "No key" : k.startsWith("sk-ant-") ? "Claude mode" : "Free mode"; } catch {}
 
 // ---------- Tabs ----------
 document.querySelectorAll(".tab").forEach((t) => t.onclick = () => {
@@ -214,9 +227,7 @@ $("#f").onsubmit = async (e) => {
   while (history.length > 8) history.splice(0, 2); // keep requests small; project summary carries the state
   const wait = add("ai", "Forging…"); $("#go").disabled = true;
   try {
-    const r = await fetch("/api/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: history }) });
-    const data = await r.json();
-    if (data.error) throw new Error(data.error);
+    const data = await generateGame(history);
     const res = data.result;
     // store a short assistant turn (full code is kept in `current`, not resent)
     history.push({ role: "assistant", content: `[${res.update || "replace"}] ${res.message || ""} Scripts: ${(res.scripts || []).map((s) => s.name).join(", ")}. New parts: ${res.model?.parts?.length || 0}.` });
@@ -249,9 +260,7 @@ $("#f").onsubmit = async (e) => {
 async function makeMesh(prompt) {
   const wait = add("ai", "Generating 3D mesh with free AI (Shap-E)… ~30-90s"); $("#go").disabled = true;
   try {
-    const r = await fetch("/api/mesh", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt }) });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const buf = await r.arrayBuffer();
+    const buf = await generateMesh(prompt);
     const gltf = await new GLTFLoader().parseAsync(buf, "");
     const obj = gltf.scene;
     // Shap-E is ~1 unit, Y-up rotated: scale to ~8 studs and stand it upright
@@ -280,9 +289,14 @@ function makeThumbs(prompt) {
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt + ", " + style)}?width=${w}&height=${h}&seed=${seed}&nologo=true`;
     const card = document.createElement("div");
     card.innerHTML = `<div style="color:var(--dim);font-size:12px">${label}</div><img style="width:100%;border-radius:8px;background:#222;min-height:80px" alt="${label}">`;
-    const img = card.querySelector("img"); img.src = url;
+    const img = card.querySelector("img");
+    // free tier: 1 image per ~45s, so the icon waits for its turn
+    const delay = grid.children.length * 47000;
+    if (delay) card.querySelector("div").textContent += " (starts in ~45s, free limit)";
+    setTimeout(() => (img.src = url), delay);
     const btn = document.createElement("button"); btn.className = "ghost"; btn.textContent = "Download"; btn.style.marginTop = "4px";
-    btn.onclick = async () => download(`${prompt.replace(/\W+/g, "_").slice(0, 30)}_${w}x${h}.jpg`, await (await fetch(url)).blob(), "image/jpeg");
+    btn.textContent = "Open full size (right-click → Save)";
+    btn.onclick = () => open(url, "_blank");
     card.appendChild(btn); grid.appendChild(card);
   }
   box.textContent = "Thumbnail + icon (upload in Creator Hub → your game → Places/Thumbnails):";
