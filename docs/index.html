@@ -49,11 +49,14 @@
 <body>
 <header><b>Ro<span>Forge</span></b><span style="color:var(--dim)">AI Roblox game &amp; 3D model builder</span>
   <span style="flex:1"></span><span id="aimode" style="color:var(--dim);font-size:12px">Free mode</span>
+  <button id="undo" class="ghost" title="Undo last change">↶ Undo</button>
+  <button id="newp" class="ghost">New</button>
   <button id="settings" class="ghost">⚙ AI key</button></header>
 <main>
   <section id="chat">
     <div id="log"><div class="msg ai">Describe a Roblox game or 3D model. I'll write the Luau scripts and build the model from parts — preview it here, then export to Roblox Studio.</div></div>
     <div class="chips">
+      <span class="chip" data-instant style="border-color:var(--accent);color:var(--text)">⚡ Instant obby (no AI, no limits)</span>
       <span class="chip">Obby with 10 stages, checkpoints, timer and saved best time</span>
       <span class="chip">Tycoon with droppers, conveyor, upgrades and saving</span>
       <span class="chip">Round-based sword fighting arena with lobby and intermission</span>
@@ -229,6 +232,7 @@ $("#f").onsubmit = async (e) => {
   try {
     const data = await generateGame(history, (sec) => (wait.textContent = `Free limit hit — waiting ${sec}s, then continuing automatically…`));
     const res = data.result;
+    snapshot();
     // store a short assistant turn (full code is kept in `current`, not resent)
     history.push({ role: "assistant", content: `[${res.update || "replace"}] ${res.message || ""} Scripts: ${(res.scripts || []).map((s) => s.name).join(", ")}. New parts: ${res.model?.parts?.length || 0}.` });
     let txt = res.message || "Done.";
@@ -242,7 +246,7 @@ $("#f").onsubmit = async (e) => {
         const byName = new Map(current.model.parts.map((p, i) => [p.name, i]));
         for (const p of res.model.parts) byName.has(p.name) ? current.model.parts[byName.get(p.name)] = p : current.model.parts.push(p);
       }
-      buildModel(current.model); showScripts(current.scripts);
+      render();
       wait.textContent = txt + `\n\n➕ Added onto project: now ${current.model?.parts?.length || 0} parts, ${current.scripts.length} scripts.`;
       return;
     }
@@ -250,11 +254,174 @@ $("#f").onsubmit = async (e) => {
     current.scripts = res.scripts || [];
     current.remotes = res.remotes || [];
     current.model = res.model?.parts?.length ? res.model : null;
-    buildModel(current.model); showScripts(current.scripts);
+    render();
   } catch (err) {
     history.pop(); wait.textContent = "Error: " + err.message; wait.classList.add("err");
   } finally { $("#go").disabled = false; }
 };
+
+// ---------- Autosave + undo ----------
+const undoStack = [];
+function snapshot() { undoStack.push(JSON.stringify(current)); if (undoStack.length > 30) undoStack.shift(); }
+function save() { try { localStorage.setItem("roforge_project", JSON.stringify({ current, history })); } catch {} }
+function render() { buildModel(current.model); showScripts(current.scripts); save(); }
+$("#undo").onclick = () => {
+  if (!undoStack.length) return add("ai", "Nothing to undo.");
+  current = JSON.parse(undoStack.pop()); render(); add("ai", "↶ Undid last change.");
+};
+$("#newp").onclick = () => {
+  if (!confirm("Start a new project? (You can still Undo.)")) return;
+  snapshot(); current = { scripts: [], model: null, remotes: [] }; history.length = 0; render();
+  add("ai", "New project started.");
+};
+try {
+  const saved = JSON.parse(localStorage.getItem("roforge_project") || "null");
+  if (saved?.current) {
+    current = saved.current; history.push(...(saved.history || []));
+    buildModel(current.model); showScripts(current.scripts);
+    if (current.model || current.scripts.length) add("ai", `Restored your last project (${current.model?.parts?.length || 0} parts, ${current.scripts.length} scripts).`);
+  }
+} catch {}
+
+// ---------- Instant obby generator (runs locally: no AI, no key, no limits) ----------
+const OBBY_SERVER = `-- RoForge Obby: data-driven, works with any number of CheckpointN parts.
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+local store = DataStoreService:GetDataStore("RoForgeObby_v1")
+local obby = workspace:WaitForChild("Obby")
+
+local function checkpoint(n: number): BasePart?
+	return obby:FindFirstChild("Checkpoint" .. n) :: BasePart?
+end
+
+local function spawnAt(player: Player)
+	local ls = player:FindFirstChild("leaderstats")
+	local stage = if ls then ls.Stage.Value else 1
+	local cp = checkpoint(stage) or checkpoint(1)
+	local char = player.Character
+	if cp and char then
+		task.wait() -- let the character finish loading
+		char:PivotTo(cp.CFrame + Vector3.new(0, 4, 0))
+	end
+end
+
+local function onPlayer(player: Player)
+	local ls = Instance.new("Folder"); ls.Name = "leaderstats"; ls.Parent = player
+	local stage = Instance.new("IntValue"); stage.Name = "Stage"; stage.Value = 1; stage.Parent = ls
+	local ok, saved = pcall(function() return store:GetAsync(tostring(player.UserId)) end)
+	if ok and typeof(saved) == "number" and checkpoint(saved) then stage.Value = saved end
+	player.CharacterAdded:Connect(function() spawnAt(player) end)
+	if player.Character then spawnAt(player) end
+end
+
+local function saveStage(player: Player)
+	local ls = player:FindFirstChild("leaderstats")
+	if not ls then return end
+	local value = ls.Stage.Value
+	for _ = 1, 3 do
+		if pcall(function() store:SetAsync(tostring(player.UserId), value) end) then return end
+		task.wait(1)
+	end
+end
+
+for _, part in obby:GetChildren() do
+	if not part:IsA("BasePart") then continue end
+	-- checkpoints: touching the next one advances your stage
+	local n = tonumber(string.match(part.Name, "^Checkpoint(%d+)$"))
+	if n then
+		part.Touched:Connect(function(hit)
+			local player = Players:GetPlayerFromCharacter(hit.Parent)
+			if not player or not player:FindFirstChild("leaderstats") then return end
+			local s = player.leaderstats.Stage
+			if n == s.Value + 1 then
+				s.Value = n
+				part.Color = Color3.fromRGB(80, 255, 120)
+			end
+		end)
+	end
+	-- kill bricks
+	if string.match(part.Name, "^Kill") then
+		part.Touched:Connect(function(hit)
+			local hum = hit.Parent and hit.Parent:FindFirstChildOfClass("Humanoid")
+			if hum then hum.Health = 0 end
+		end)
+	end
+	-- moving platforms
+	if string.match(part.Name, "^Mover") then
+		local start = part.Position
+		task.spawn(function()
+			local t = 0
+			while part.Parent do
+				t += task.wait()
+				part.Position = start + Vector3.new(math.sin(t * 1.5) * 8, 0, 0)
+			end
+		end)
+	end
+end
+
+Players.PlayerAdded:Connect(onPlayer)
+for _, p in Players:GetPlayers() do task.spawn(onPlayer, p) end
+Players.PlayerRemoving:Connect(saveStage)
+game:BindToClose(function() for _, p in Players:GetPlayers() do saveStage(p) end end)
+`;
+
+const OBBY_UI = `-- RoForge Obby UI: shows current stage.
+local player = game:GetService("Players").LocalPlayer
+local gui = Instance.new("ScreenGui"); gui.Name = "ObbyUI"; gui.ResetOnSpawn = false; gui.Parent = player:WaitForChild("PlayerGui")
+local label = Instance.new("TextLabel")
+label.Size = UDim2.fromScale(0.25, 0.08); label.Position = UDim2.fromScale(0.375, 0.02)
+label.BackgroundColor3 = Color3.fromRGB(20, 20, 30); label.BackgroundTransparency = 0.2
+label.TextColor3 = Color3.new(1, 1, 1); label.TextScaled = true; label.Font = Enum.Font.FredokaOne
+label.Parent = gui
+Instance.new("UICorner", label).CornerRadius = UDim.new(0.3, 0)
+local stage = player:WaitForChild("leaderstats"):WaitForChild("Stage")
+local function update() label.Text = "Stage " .. stage.Value end
+stage.Changed:Connect(update); update()
+`;
+
+const PALETTE = ["#ff5c5c", "#ffb347", "#ffe066", "#7bed9f", "#70a1ff", "#a29bfe", "#fd79a8"];
+function obbyStages(from, count, startPos) {
+  const parts = []; let [x, y, z] = startPos;
+  for (let i = from; i < from + count; i++) {
+    const col = PALETTE[i % PALETTE.length], kind = i === 1 ? 0 : (i * 7) % 5;
+    if (kind === 0) { // simple jumps
+      for (let j = 0; j < 4; j++) { z -= 9; y += j % 2; parts.push({ name: `S${i}_Jump${j}`, size: [5, 1, 5], position: [x, y, z], color: col, material: "SmoothPlastic" }); }
+    } else if (kind === 1) { // lava floor with stepping stones
+      parts.push({ name: `KillLava${i}`, size: [14, 1, 34], position: [x, y - 3, z - 18], color: "#ff4500", material: "Neon" });
+      for (let j = 0; j < 4; j++) { z -= 8; parts.push({ name: `S${i}_Stone${j}`, shape: "Cylinder", size: [1, 4, 4], position: [x + (j % 2 ? 3 : -3), y, z], rotation: [0, 0, 90], color: col, material: "Concrete" }); }
+    } else if (kind === 2) { // thin beam
+      z -= 16; parts.push({ name: `S${i}_Beam`, size: [1.5, 1, 24], position: [x, y, z], color: col, material: "Wood" }); z -= 8;
+    } else if (kind === 3) { // moving platforms
+      for (let j = 0; j < 2; j++) { z -= 11; parts.push({ name: `Mover${i}_${j}`, size: [6, 1, 6], position: [x, y, z], color: col, material: "Metal" }); }
+    } else { // staircase up
+      for (let j = 0; j < 5; j++) { z -= 6; y += 2; parts.push({ name: `S${i}_Step${j}`, size: [6, 1, 4], position: [x, y, z], color: col, material: "Brick" }); }
+    }
+    z -= 10;
+    parts.push({ name: `Checkpoint${i + 1}`, size: [8, 1, 8], position: [x, y, z], color: "#dfe6e9", material: "SmoothPlastic" });
+  }
+  return { parts, end: [x, y, z] };
+}
+
+function instantObby(count) {
+  snapshot();
+  const existing = current.model?.name === "Obby" ? current.model.parts : null;
+  if (existing) { // add more stages after the last checkpoint
+    const last = Math.max(...existing.map((p) => +(p.name.match(/^Checkpoint(\d+)$/)?.[1] || 0)));
+    const cp = existing.find((p) => p.name === "Checkpoint" + last);
+    existing.push(...obbyStages(last, count, cp.position).parts);
+  } else {
+    const start = { name: "Checkpoint1", size: [12, 1, 12], position: [0, 0.5, 0], color: "#55efc4", material: "SmoothPlastic" };
+    current = {
+      model: { name: "Obby", parts: [start, ...obbyStages(1, count, start.position).parts] }, remotes: [],
+      scripts: [{ name: "ObbyServer", type: "Script", parent: "ServerScriptService", source: OBBY_SERVER },
+                { name: "ObbyUI", type: "LocalScript", parent: "StarterPlayerScripts", source: OBBY_UI }],
+    };
+  }
+  render();
+  const stages = current.model.parts.filter((p) => /^Checkpoint\d+$/.test(p.name)).length;
+  add("ai", `⚡ ${existing ? "Added " + count + " stages" : "Built an obby"}: now ${stages - 1} stages with jumps, lava, beams, moving platforms and stairs. Progress saves. Click the chip again to add 10 more, then Export → Copy installer.`);
+}
+document.querySelector("[data-instant]").addEventListener("click", (e) => { e.stopImmediatePropagation(); instantObby(10); }, true);
 
 // ---------- Free AI mesh ----------
 async function makeMesh(prompt) {
